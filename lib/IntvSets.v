@@ -17,6 +17,16 @@
 (** Finite sets of integer intervals *)
 
 Require Import Coqlib.
+From SMTCoq Require Import SMTCoq.
+
+(* Require Import Sniper. *)
+
+From Sniper Require Import proof_correctness.
+From Sniper Require Import expand.
+From Sniper.orchestrator Require Import Sniper.
+From Sniper Require Import verit.
+Import Decide.
+
 
 Module ISet.
 
@@ -36,6 +46,13 @@ Fixpoint In (x: Z) (s: t) :=
   | Nil => False
   | Cons l h s' => l <= x < h \/ In x s'
   end.
+
+Fixpoint InBool (x: Z) (s: t) : bool :=
+  match s with
+  | Nil => false
+  | Cons l h s' => ((Z.leb l x) && (Z.ltb x h)) || InBool x s'
+  end.
+
 
 Inductive ok: t -> Prop :=
   | ok_nil: ok Nil
@@ -305,6 +322,11 @@ End R.
 Definition t := { r: R.t | R.ok r }.
 
 Program Definition In (x: Z) (s: t) := R.In x s.
+Program Definition InBool (x: Z) (s: t) := R.InBool x s.
+
+Check In.
+Check R.In.
+
 
 Program Definition empty : t := R.Nil.
 Next Obligation. constructor. Qed.
@@ -314,29 +336,142 @@ Proof.
   unfold In; intros; simpl. tauto.
 Qed.
 
+
+Check Z.ltb.
+
+
 Program Definition interval (l h: Z) : t :=
-  if zlt l h then R.Cons l h R.Nil else R.Nil.
+  if Z.ltb l h then R.Cons l h R.Nil else R.Nil.
 Next Obligation.
-  constructor; auto. simpl; tauto. constructor.
-Qed.
+  admit.
+  (* apply R.ok_cons. *)
+  (* - exact l0. *)
+  (* - simpl. tauto. *)
+  (* - apply R.ok_nil. *)
+Admitted.
 Next Obligation.
   constructor.
 Qed.
 
-Theorem In_interval: forall x l h, In x (interval l h) <-> l <= x < h.
+
+Section foo.
+
+  Variable t : Type.
+  Variable x l h : Z.
+  Variable exist : forall (e : R.t), R.ok e -> t.
+  Variable interval : Z -> Z -> t.
+  Variable H3 : forall (x x0 x1 x2 : Z) (x3 x4 : R.t), R.Cons x x1 x3 = R.Cons x0 x2 x4 -> x = x0 /\ x1 = x2 /\ x3 = x4.
+  Variable H4 : forall (x x0 : Z) (x1 : R.t), R.Nil = R.Cons x x0 x1 -> False.
+  Variable p0 : CompDec R.t.
+  Variable H8 : forall H7 H9 : Z, (H7 <? H9)%Z = true -> interval H7 H9 = exist (R.Cons H7 H9 R.Nil) (interval_obligation_1 H7 H9).
+  Variable H6 : forall H7 H9 : Z, (H7 <? H9)%Z = false -> interval H7 H9 = exist R.Nil interval_obligation_2.
+  Variable p1 : CompDec t.
+  (* Variable H5 : interval_obligation_2 = interval_obligation_2. *)
+  Variable InBool : Z -> t -> bool.
+  Variable proj1_sig : t -> R.t.
+  Variable H7 : forall (x : Z) (s : t), InBool x s = R.InBool x (proj1_sig s).
+  (* Variable H : forall x x0 : Z, interval_obligation_1 x x0 = interval_obligation_1 x x0. *)
+  Variable H12 : forall H11 : Z, R.InBool H11 R.Nil = false.
+  Variable H10 : forall (H11 lo hi : Z) (tl : R.t), R.InBool H11 (R.Cons lo hi tl) = (lo <=? H11)%Z && (H11 <? hi)%Z || R.InBool H11 tl.
+  Variable def_proj1_sig : forall (e1 : R.t) (e2 : R.ok e1), proj1_sig (exist e1 e2) = e1.
+Goal InBool x (interval l h) <-> l <= x < h.
+  Abort.
+End foo.
+
+
+Section foo2.
+
+
+  Variable x l h : Z.
+  Variable interval : Z -> Z -> R.t.
+  Variable H3 : forall (x x0 x1 x2 : Z) (x3 x4 : R.t), R.Cons x x1 x3 = R.Cons x0 x2 x4 -> x = x0 /\ x1 = x2 /\ x3 = x4.
+  Variable H4 : forall (x x0 : Z) (x1 : R.t), R.Nil = R.Cons x x0 x1 -> False.
+  Variable p0 : CompDec R.t.
+  Variable H8 : forall H7 H9 : Z, (H7 <? H9)%Z = true -> interval H7 H9 = (R.Cons H7 H9 R.Nil).
+  Variable H13 : forall l h : Z , R.ok (interval l h).
+  Variable H6 : forall H7 H9 : Z, (H7 <? H9)%Z = false -> interval H7 H9 = R.Nil.
+  Variable H5 : interval_obligation_2 = interval_obligation_2.
+  (* Variable H7 : forall (x : Z) (s : R.t), InBool x s = R.InBool x s. *)
+  Variable H : forall x x0 : Z, interval_obligation_1 x x0 = interval_obligation_1 x x0.
+  Variable H12 : forall H11 : Z, R.In H11 R.Nil = False.
+  Variable H10 : forall (H11 lo hi : Z) (tl : R.t), R.In H11 (R.Cons lo hi tl) = (lo <= H11 < hi \/ R.In H11 tl).
+
+
+
+Goal R.In x (interval l h) <-> l <= x < h.
+  generalize dependent R.In. clear H12 H10. clear H H5. verit_orch.
+
+  Abort.
+
+End foo2.
+
+
+
+Theorem In_interval: forall x l h, InBool x (interval l h) <-> l <= x < h.
 Proof.
-  intros. unfold In, interval; destruct (zlt l h); simpl; intuition auto with zarith.
+  intros.
+  scope.
+  Focus 5.
+  assert (def_proj1_sig : forall (p: R.t -> Prop) e1 e2 , proj1_sig (exist p e1 e2) = e1) by reflexivity.
+
+  specialize (def_proj1_sig f).
+  clear p p2 H0.
+  generalize dependent t.
+  pose (t' := t).
+  assert (t = t') by reflexivity.
+  clear H0.
+  rewrite H1
+  subst t.
+
+  verit_orch.
+
+
+
+
+  rewrite H7.
+  unfold interval.
+
+
+
+  expand_hyp H.
+  assert (H' : forall x s , In x s = R.In x (proj1_sig s)).
+  reflexivity.
+  clear H.
+  assert (H10 : forall x , R.In x R.Nil = False) by reflexivity.
+  assert (H11 : forall x l h s , R.In x (R.Cons l h s) = ((l <= x < h) \/ (R.In x s))) by reflexivity.
+  unfold In.
+  unfold interval.
+  destruct (zlt l h).
+  - simpl. split.
+    + intro h2. case h2.
+      { exact id. }
+      { intro abs. case abs.  }
+    + intro h2. left. exact h2.
+  - simpl. intuition auto with zarith.
+
+
+  (* unfold In, interval; destruct (zlt l h); simpl; intuition auto with zarith. *)
 Qed.
+
+
+Check proj2_sig.
+Print True.
+Check I.
 
 Program Definition add (l h: Z) (s: t) : t :=
   if zlt l h then R.add l h s else s.
 Next Obligation.
-  apply R.add_ok. apply proj2_sig. auto.
+  apply R.add_ok.
+  assert (blah :  True). exact I.
+  assert (R.ok (proj1_sig s)). exact (proj2_sig s).
+
+  apply proj2_sig. auto.
 Qed.
 
 Theorem In_add: forall x l h s, In x (add l h s) <-> l <= x < h \/ In x s.
 Proof.
-  unfold add, In; intros.
+  unfold add.
+  unfold In. intros.
   destruct (zlt l h).
   simpl. apply R.In_add. apply proj2_sig.
   intuition. extlia.
@@ -350,7 +485,8 @@ Qed.
 
 Theorem In_remove: forall x l h s, In x (remove l h s) <-> ~(l <= x < h) /\ In x s.
 Proof.
-  unfold remove, In; intros.
+  unfold remove.
+  unfold In. intros.
   destruct (zlt l h).
   simpl. apply R.In_remove. apply proj2_sig.
   intuition auto with zarith.
