@@ -18,9 +18,12 @@
 
 Require Import Coqlib.
 From SMTCoq Require Import SMTCoq.
+From SMTCoq Require Import Conversion.
 
 (* Require Import Sniper. *)
 
+From MetaCoq.Template Require Import All.
+Unset MetaCoq Strict Unquote Universe Mode.
 From Sniper Require Import proof_correctness.
 From Sniper Require Import expand.
 From Sniper.orchestrator Require Import Sniper.
@@ -29,6 +32,7 @@ Import Decide.
 
 
 Module ISet.
+
 
 (** "Raw", non-dependent implementation.  A set of intervals is a
   list of nonempty semi-open intervals [(lo, hi)],
@@ -62,11 +66,47 @@ Inductive ok: t -> Prop :=
       (OK: ok s),
       ok (Cons l h s).
 
+Open Scope Z_scope.
+
+Fixpoint ok' (x : t) : bool :=
+  match x with
+    | Nil => true
+    | Cons l1 h1 s =>
+        match s with
+        | Nil => l1 <? h1
+        | Cons l2 _ _ => (l1 <? h1) && (h1 <? l2) && (ok' s)
+        end
+  end.
+
 Fixpoint mem (x: Z) (s: t) : bool :=
   match s with
   | Nil => false
   | Cons l h s' => if zlt x h then zle l x else mem x s'
   end.
+
+Check CompDec.
+
+Check Nil.
+
+(* #[global] Instance foo : Inhabited t := { default_value := Nil }. *)
+
+(* Fixpoint t_eqb : t -> t -> bool := fun x y => *)
+(*   match x, y with *)
+(*     | Nil, Nil => true *)
+
+(* #[global] Instance bar : EqbType t := *)
+(*   { eqb x y *)
+(*   } *)
+
+
+(* Axiom compdec_t : CompDec t. *)
+
+(* MetaCoq Run (decide ok []). *)
+(* Next Obligation. *)
+(*   exact compdec_t. *)
+(* Defined. *)
+  (* assert (Inhabited t) by exact foo. *)
+
 
 Lemma mem_In:
   forall x s, ok s -> (mem x s = true <-> In x s).
@@ -340,6 +380,7 @@ Qed.
 Check Z.ltb.
 
 
+
 Program Definition interval (l h: Z) : t :=
   if Z.ltb l h then R.Cons l h R.Nil else R.Nil.
 Next Obligation.
@@ -399,59 +440,107 @@ Section foo2.
 
 
 Goal R.In x (interval l h) <-> l <= x < h.
-  generalize dependent R.In. clear H12 H10. clear H H5. verit_orch.
+  (* generalize dependent R.In. clear H12 H10. clear H H5. verit_orch. *)
 
   Abort.
 
 End foo2.
 
+Axiom ok_ok' : forall t , R.ok t <-> R.ok' t = true.
 
+Trakt Add Relation 1 R.ok R.ok' ok_ok'.
+
+Theorem cong {A B : Type} {x y : A} (f : A -> B) (H : x = y) : f x = f y.
+Proof.
+  rewrite H.
+  reflexivity.
+Qed.
+
+Theorem orb_false : forall x : bool , (x || false) = x.
+  Proof. intro x. destruct x eqn:H. reflexivity. reflexivity. Qed.
 
 Theorem In_interval: forall x l h, InBool x (interval l h) <-> l <= x < h.
 Proof.
   intros.
+  split.
+  intro H.
+
+  (*
+    OVERVIEW OF THE FIRST TRANSFORMATION (before rest of scope)
+      1. Identify in the context function that returns refinement type (interval)
+      2. Add new symbol whose definition is the `proj1_sig` composed with function (interval')
+      3. Add hypothesis stating that new symbol equals old symbol for all parameters (H_def)
+      4. Add hypothesis stating that new symbol satisfies predicate of refinement type (H_prop)
+      5. For the user: trakt needs to know how to transform predicate into a boolean fixpoint
+   *)
+
+  pose (interval' := fun l h => proj1_sig (interval l h)).
+  assert (H_def : forall l h , interval' l h = proj1_sig (interval l h)) by reflexivity.
+  clearbody interval'.
+  assert (H_prop : forall l h , R.ok (interval' l h)).
+  { intros. rewrite H_def. destruct (interval l0 h0). exact o. }
+  revert H_prop.
+  trakt bool.
+  intro H1.
+  change (forall x y : Z , R.ok' (interval' x y) = true) in H1.
+  change (forall x y : Z , interval' x y = proj1_sig (interval x y)) in H_def.
   scope.
-  Focus 5.
-  assert (def_proj1_sig : forall (p: R.t -> Prop) e1 e2 , proj1_sig (exist p e1 e2) = e1) by reflexivity.
+  Focus 3.
 
-  specialize (def_proj1_sig f).
-  clear p p2 H0.
-  generalize dependent t.
-  pose (t' := t).
-  assert (t = t') by reflexivity.
-  clear H0.
-  rewrite H1
-  subst t.
-
-  verit_orch.
+  (*
+    OVERVIEW OF THE SECOND TRANSFORMATION (after rest of scope?)
+      1. Identify in the context equalities of the form `s = exist x p` <- coming from definitions of refinement types
+      2. Define and prove new equality `proj1_sig s = x`
+      3?. Try to find something to replace by `proj1_sig s` (bug in SMTCoq)
+      4. Replace old equality with new one
+   *)
 
 
+  (* NOTE: we could potentially leave these theorems with `proj1_sig` instead of
+     `interval'`, but this is causing a bug in SMTCoq that I don't understand
+     For now I am removing all uses of proj1_sig. With this we are able to prove
+     the theorem with verit. However, implementing an independent transformation
+     that generates the following hypothesis requires searching for something that
+     is equal to `proj1_sig (interval x y)` in the context
+   *)
+
+  assert (H10' : forall x y : Z , (x <? y)%Z = true -> (interval' x y) = (R.Cons x y R.Nil)).
+  { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H10 x0 y H6)). }
+  clear H10.
+  rename H10' into H10.
+
+  assert (H8' : forall x y : Z , (x <? y)%Z = false -> interval' x y = R.Nil).
+  { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H8 x0 y H6)). }
+  clear H8.
+  rename H8' into H8.
+
+  (* These should be automatically filtered by scope *)
+  clear H0 H9.
+  clear H2.
+
+  (* What about this? *)
+  (* This shouldn't be necessary - the SMT solver could infer the new hypothesis by the context *)
+  (* However this is raising a bug in SMTCoq, seems related to the existence of `proj1_sig` in the context *)
+  (* I think this is what Chantal said she will fix? the reification of the type of this symbol? *)
+  (* If this is the case then we don't need to consider the following lines in the transformation *)
+  rewrite H11 in H.
+  rewrite <- H_def in H.
+  clear H_def H11.
 
 
-  rewrite H7.
-  unfold interval.
+  verit.
 
+  clear H2 H10 H3.
+  clear H6.
 
-
-  expand_hyp H.
-  assert (H' : forall x s , In x s = R.In x (proj1_sig s)).
-  reflexivity.
-  clear H.
-  assert (H10 : forall x , R.In x R.Nil = False) by reflexivity.
-  assert (H11 : forall x l h s , R.In x (R.Cons l h s) = ((l <= x < h) \/ (R.In x s))) by reflexivity.
-  unfold In.
-  unfold interval.
-  destruct (zlt l h).
-  - simpl. split.
-    + intro h2. case h2.
-      { exact id. }
-      { intro abs. case abs.  }
-    + intro h2. left. exact h2.
-  - simpl. intuition auto with zarith.
-
-
-  (* unfold In, interval; destruct (zlt l h); simpl; intuition auto with zarith. *)
-Qed.
+  rewrite H12 in H.
+  rewrite <- H0 in H.
+  clear H0 H12.
+  verit.
+  admit.
+  admit.
+  admit.
+Admitted.
 
 
 Check proj2_sig.
