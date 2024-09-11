@@ -22,10 +22,12 @@ From SMTCoq Require Import Conversion.
 
 (* Require Import Sniper. *)
 
+
 From MetaCoq.Template Require Import All.
 Unset MetaCoq Strict Unquote Universe Mode.
 From Sniper Require Import proof_correctness.
 From Sniper Require Import expand.
+From Sniper Require Import pattern_matching_goal.
 From Sniper.orchestrator Require Import Sniper.
 From Sniper Require Import verit.
 Import Decide.
@@ -67,6 +69,7 @@ Inductive ok: t -> Prop :=
       ok (Cons l h s).
 
 Open Scope Z_scope.
+
 
 Fixpoint ok' (x : t) : bool :=
   match x with
@@ -151,6 +154,18 @@ Fixpoint add (L H: Z) (s: t) {struct s} : t :=
       else add (Z.min l L) (Z.max h H) s'
   end.
 
+Definition min (x y:Z) := if x <? y then x else y.
+Definition max (x y:Z) := if x <? y then y else x.
+
+Fixpoint addBool (L H : Z) (s : t) {struct s} : t :=
+  match s with
+    | Nil => Cons L H Nil
+    | Cons l h s' =>
+        if Z.ltb h L then Cons l h (addBool L H s')
+        else if Z.ltb H l then Cons L H s
+        else addBool ( min l L) (max h H) s'
+  end.
+
 Lemma In_add:
   forall x s, ok s -> forall l0 h0, (In x (add l0 h0 s) <-> l0 <= x < h0 \/ In x s).
 Proof.
@@ -165,6 +180,10 @@ Proof.
   left; extlia.
   left; extlia.
 Qed.
+
+Lemma In_addBool :
+  forall x s , ok' s -> forall l0 h0 , (InBool x (addBool l0 h0 s) <-> ((Z.leb l0 x && Z.ltb x h0) || InBool x s)).
+Admitted.
 
 Lemma add_ok:
   forall s, ok s -> forall l0 h0, l0 < h0 -> ok (add l0 h0 s).
@@ -364,9 +383,11 @@ Definition t := { r: R.t | R.ok r }.
 Program Definition In (x: Z) (s: t) := R.In x s.
 Program Definition InBool (x: Z) (s: t) := R.InBool x s.
 
-Check In.
-Check R.In.
 
+Definition InBool' (x : Z) (s : R.t) := R.InBool x s.
+
+Theorem inBool'_inBool:  forall x s, InBool' x (proj1_sig s) = InBool x s.
+Proof. reflexivity. Qed.
 
 Program Definition empty : t := R.Nil.
 Next Obligation. constructor. Qed.
@@ -375,11 +396,6 @@ Theorem In_empty: forall x, ~(In x empty).
 Proof.
   unfold In; intros; simpl. tauto.
 Qed.
-
-
-Check Z.ltb.
-
-
 
 Program Definition interval (l h: Z) : t :=
   if Z.ltb l h then R.Cons l h R.Nil else R.Nil.
@@ -459,106 +475,334 @@ Qed.
 Theorem orb_false : forall x : bool , (x || false) = x.
   Proof. intro x. destruct x eqn:H. reflexivity. reflexivity. Qed.
 
+Print interval.
+
+Definition interval' l h :=
+  if Z.ltb l h then R.Cons l h R.Nil else R.Nil.
+
+
+Program Definition intervalRedef (l h: Z) : t :=
+  exist _ (if Z.ltb l h then R.Cons l h R.Nil else R.Nil) _.
+Next Obligation.
+  intros.
+  destruct (l <? h)%Z eqn:H.
+  - apply R.ok_cons.
+    + trakt bool. exact H.
+    + intros x abs. destruct abs.
+    + exact R.ok_nil.
+  - exact R.ok_nil.
+Qed.
+
+Theorem intervalRedef_interval' : forall l h , interval' l h = proj1_sig (intervalRedef l h).
+  Proof. reflexivity. Qed.
+
+Theorem ok_interval' : forall l h , R.ok (interval' l h).
+  Proof. intros. rewrite intervalRedef_interval'. apply proj2_sig. Qed.
+
+
+(* Theorem In_interval': forall x l h, InBool x (intervalRedef l h) <-> l <= x < h. *)
+(*   Proof. *)
+(*     intros. rewrite <- inBool'_inBool. rewrite <- intervalRedef_interval'. *)
+(*     scope. Focus 2. split. *)
+(*       - intro H. verit. *)
+(*       - admit. *)
+(*       - intro H. verit. admit. *)
+(* Admitted. *)
+
 Theorem In_interval: forall x l h, InBool x (interval l h) <-> l <= x < h.
 Proof.
-  intros.
-  split.
-  intro H.
+  Abort.
+  (* intros. *)
 
-  (*
-    OVERVIEW OF THE FIRST TRANSFORMATION (before rest of scope)
-      1. Identify in the context function that returns refinement type (interval)
-      2. Add new symbol whose definition is the `proj1_sig` composed with function (interval')
-      3. Add hypothesis stating that new symbol equals old symbol for all parameters (H_def)
-      4. Add hypothesis stating that new symbol satisfies predicate of refinement type (H_prop)
-      5. For the user: trakt needs to know how to transform predicate into a boolean fixpoint
-   *)
+  (* (* *)
+  (*   OVERVIEW OF THE FIRST TRANSFORMATION (before rest of scope) *)
+  (*     1. Identify in the context function that returns refinement type (interval) *)
+  (*     2. Add new symbol whose definition is the `proj1_sig` composed with function (interval') *)
+  (*     3. Add hypothesis stating that new symbol equals old symbol for all parameters (H_def) *)
+  (*     4. Add hypothesis stating that new symbol satisfies predicate of refinement type (H_prop) *)
+  (*     5. For the user: trakt needs to know how to transform predicate into a boolean fixpoint *)
+  (*  *) *)
 
-  pose (interval' := fun l h => proj1_sig (interval l h)).
-  assert (H_def : forall l h , interval' l h = proj1_sig (interval l h)) by reflexivity.
-  clearbody interval'.
-  assert (H_prop : forall l h , R.ok (interval' l h)).
-  { intros. rewrite H_def. destruct (interval l0 h0). exact o. }
-  revert H_prop.
-  trakt bool.
-  intro H1.
-  change (forall x y : Z , R.ok' (interval' x y) = true) in H1.
-  change (forall x y : Z , interval' x y = proj1_sig (interval x y)) in H_def.
-  scope.
-  Focus 3.
-
-  (*
-    OVERVIEW OF THE SECOND TRANSFORMATION (after rest of scope?)
-      1. Identify in the context equalities of the form `s = exist x p` <- coming from definitions of refinement types
-      2. Define and prove new equality `proj1_sig s = x`
-      3?. Try to find something to replace by `proj1_sig s` (bug in SMTCoq)
-      4. Replace old equality with new one
-   *)
+  (* pose (interval' := fun l h => proj1_sig (interval l h)). *)
+  (* assert (H_def : forall l h , interval' l h = proj1_sig (interval l h)) by reflexivity. *)
+  (* clearbody interval'. *)
+  (* assert (H_prop : forall l h , R.ok (interval' l h)). *)
+  (* { intros. rewrite H_def. destruct (interval l0 h0). exact o. } *)
+  (* revert H_prop. *)
+  (* trakt bool. *)
+  (* intro H1. *)
+  (* change (forall x y : Z , R.ok' (interval' x y) = true) in H1. *)
+  (* change (forall x y : Z , interval' x y = proj1_sig (interval x y)) in H_def. *)
 
 
-  (* NOTE: we could potentially leave these theorems with `proj1_sig` instead of
-     `interval'`, but this is causing a bug in SMTCoq that I don't understand
-     For now I am removing all uses of proj1_sig. With this we are able to prove
-     the theorem with verit. However, implementing an independent transformation
-     that generates the following hypothesis requires searching for something that
-     is equal to `proj1_sig (interval x y)` in the context
-   *)
 
-  assert (H10' : forall x y : Z , (x <? y)%Z = true -> (interval' x y) = (R.Cons x y R.Nil)).
-  { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H10 x0 y H6)). }
-  clear H10.
-  rename H10' into H10.
+  (* split. *)
 
-  assert (H8' : forall x y : Z , (x <? y)%Z = false -> interval' x y = R.Nil).
-  { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H8 x0 y H6)). }
-  clear H8.
-  rename H8' into H8.
+  (* (* First direction of the proof *) *)
 
-  (* These should be automatically filtered by scope *)
-  clear H0 H9.
-  clear H2.
+  (* intro H. *)
 
-  (* What about this? *)
-  (* This shouldn't be necessary - the SMT solver could infer the new hypothesis by the context *)
-  (* However this is raising a bug in SMTCoq, seems related to the existence of `proj1_sig` in the context *)
-  (* I think this is what Chantal said she will fix? the reification of the type of this symbol? *)
-  (* If this is the case then we don't need to consider the following lines in the transformation *)
-  rewrite H11 in H.
-  rewrite <- H_def in H.
-  clear H_def H11.
+  (* scope. *)
+  (* admit. *)
+  (* admit. *)
 
 
-  verit.
-
-  clear H2 H10 H3.
-  clear H6.
-
-  rewrite H12 in H.
-  rewrite <- H0 in H.
-  clear H0 H12.
-  verit.
-  admit.
-  admit.
-  admit.
-Admitted.
+  (* (* *)
+  (*   OVERVIEW OF THE SECOND TRANSFORMATION (after rest of scope?) *)
+  (*     1. Identify in the context equalities of the form `s = exist x p` <- coming from definitions of refinement types *)
+  (*     2. Define and prove new equality `proj1_sig s = x` *)
+  (*     3?. Try to find something to replace by `proj1_sig s` (bug in SMTCoq) *)
+  (*     4. Replace old equality with new one *)
+  (*  *) *)
 
 
-Check proj2_sig.
-Print True.
-Check I.
+  (* (* NOTE: we could potentially leave these theorems with `proj1_sig` instead of *)
+  (*    `interval'`, but this is causing a bug in SMTCoq that I don't understand *)
+  (*    For now I am removing all uses of proj1_sig. With this we are able to prove *)
+  (*    the theorem with verit. However, implementing an independent transformation *)
+  (*    that generates the following hypothesis requires searching for something that *)
+  (*    is equal to `proj1_sig (interval x y)` in the context *)
+  (*  *) *)
+
+  (* assert (H11' : forall x y : Z , (x <? y)%Z = true -> (interval' x y) = (R.Cons x y R.Nil)). *)
+  (* { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H11 x0 y H5)). } *)
+  (* clear H11. *)
+  (* rename H11' into H11. *)
+
+  (* assert (H9' : forall x y : Z , (x <? y)%Z = false -> interval' x y = R.Nil). *)
+  (* { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H9 x0 y H5)). } *)
+  (* clear H9. *)
+  (* rename H9' into H9. *)
+
+  (* (* These should be automatically filtered by scope *) *)
+  (* clear H0 H8 H2. *)
+
+  (* (* What about this? *) *)
+  (* (* This shouldn't be necessary - the SMT solver could infer the new hypothesis by the context *) *)
+  (* (* However this is raising a bug in SMTCoq, seems related to the existence of `proj1_sig` in the context *) *)
+  (* (* I think this is what Chantal said she will fix? the reification of the type of this symbol? *) *)
+  (* (* If this is the case then we don't need to consider the following lines in the transformation *) *)
+  (* rewrite H10 in H. *)
+  (* rewrite <- H_def in H. *)
+  (* clear H_def H10. *)
+
+  (* clear p0 H6. *)
+
+
+
+
+  (* verit. *)
+
+
+  (* (* Second direction of the proof - does the same thing work? *) *)
+
+  (* intro H. *)
+
+  (* scope. *)
+  (* admit. *)
+  (* admit. *)
+
+  (* assert (H11' : forall x y : Z , (x <? y)%Z = true -> interval' x y = R.Cons x y R.Nil). *)
+  (* { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H11 x0 y H5)). } *)
+  (* clear H11. *)
+  (* rename H11' into H11. *)
+
+  (* assert (H9' : forall x y : Z , (x <? y)%Z = false -> interval' x y = R.Nil). *)
+  (* { intros. rewrite H_def. exact (cong (@proj1_sig R.t R.ok) (H9 x0 y H5)). } *)
+  (* clear H9. *)
+  (* rename H9' into H9. *)
+
+  (* clear H8 H0. *)
+
+  (* rewrite H10. *)
+  (* rewrite <- H_def. *)
+
+  (* clear H_def H10. *)
+
+  (* clear p0. *)
+  (* clear H6. *)
+  (* clear H2. *)
+  (* clearbody f. *)
+
+  (* verit. (* Works! but generates weird new goal *) *)
+  (* Abort. *)
+
+
+Axiom foo : forall (l h : Z) (s : t), (fun r : R.t => R.ok r) (if (l <? h)%Z then R.addBool l h (proj1_sig s) else proj1_sig s)
 
 Program Definition add (l h: Z) (s: t) : t :=
   if zlt l h then R.add l h s else s.
 Next Obligation.
-  apply R.add_ok.
-  assert (blah :  True). exact I.
-  assert (R.ok (proj1_sig s)). exact (proj2_sig s).
-
-  apply proj2_sig. auto.
+  intros. apply R.add_ok. apply proj2_sig. auto.
 Qed.
 
-Theorem In_add: forall x l h s, In x (add l h s) <-> l <= x < h \/ In x s.
+Program Definition addBool (l h : Z) (s : t) : t :=
+  if Z.ltb l h then R.addBool l h s else s.
+Next Obligation.
+  admit.
+Admitted.
+
+Program Definition addBool' (l h : Z) (s : t) : t :=
+  exist _ (if Z.ltb l h then R.addBool l h s else s) _.
+Next Obligation.
+  admit.
+Admitted.
+
+
+Goal False.
+  pose (g l h s := proj1_sig (addBool' l h s)).
+  unfold addBool' in g.
+  simpl in g.
+  assert (forall l h s , g l h s = proj1_sig (addBool' l h s) ) by reflexivity.
+
+  (* Does not work: g is still expecting a refinement type *)
+  (* assert (forall l h s , R.ok s -> R.ok (g l h s)). *)
+
+  (* Idea: I think getting the body of the `Program Definition` is a bit ad-hoc *)
+  (* Maybe instead of this we can traverse the lambda expression and craft a new expression with all occurrences of `proj1_sig s` replaced by `s'` (a new variable binded by a lambda with the correct type)? Seems to work on this case. We would have to recursively do the same in all expressions inside the body *)
+Print addBool'.
+  Abort.
+
+
+
+Lemma ok_ok'2 (s:R.t) : R.ok' s = true -> R.ok s.
+Proof. now rewrite ok_ok'. Qed.
+
+Definition add'2 (x y:Z) (s:R.t) : R.t.
+  case_eq (R.ok' s); intro Heq.
+  - exact (proj1_sig (add x y (exist _ s (ok_ok'2 _ Heq)))).
+  - exact s.
+Defined.
+
+Print add'2.
+
+(* Goal forall x y s , R.ok s -> R.ok (add'2 x y s). *)
+(*   Proof. intros. unfold add'2. rewrite ok_ok' in H. *)
+(*          change ((fun (o:R.t -> bool) q => R.ok *)
+(*     ((if o s as b return (o s = b -> R.t) *)
+(*       then *)
+(*        fun Heq : o s = true => *)
+(*        proj1_sig (add x y (exist (fun r : R.t => R.ok r) s (ok_ok'2 s Heq))) *)
+(*       else fun _ : o = false => s) q) *)
+(* ) (R.ok' s) eq_refl). *)
+(*          change ((fun q => R.ok *)
+(*     ((if R.ok' s as b return (R.ok' s = b -> R.t) *)
+(*       then *)
+(*        fun Heq : R.ok' s = true => *)
+(*        proj1_sig (add x y (exist (fun r : R.t => R.ok r) s (ok_ok'2 s Heq))) *)
+(*       else fun _ : R.ok' s = false => s) q) *)
+(* ) eq_refl). *)
+(*          replace  *)
+
+
+(* Goal forall l h s , proj1_sig (addBool l h s) = proj1_sig (addBool' l h s). *)
+(* Proof. *)
+(*   intros. *)
+(*     unfold addBool, addBool'. *)
+(*     simpl. *)
+
+(* Lemma adds : forall x y s, R.add x y s = R.addBool x y s. *)
+(* Proof. *)
+(*   intros x y. *)
+(*   unfold R.add, R.addBool. *)
+(*   induction s as [ |l h s']. *)
+(*   - reflexivity. *)
+(*   -  *)
+(* Qed. *)
+
+
+Definition add' (l h : Z) (s : R.t) : R.t :=
+  if Z.ltb l h then R.addBool l h s else s.
+
+Check addBool_obligation_1.
+
+Theorem add'_addBool : forall x y s (h: R.ok s) , add' x y s = proj1_sig (addBool x y (exist R.ok s h)).
+  Proof. intros. unfold addBool, add'. case (x <? y)%Z. reflexivity. reflexivity. Qed.
+
+Theorem add'_addBool2 : forall x y s , add' x y (proj1_sig s) = proj1_sig (addBool x y s).
+  Proof. intros. unfold addBool, add'. case (x <? y)%Z. reflexivity. reflexivity. Qed.
+
+Lemma ok_add' : forall x y s , R.ok s -> R.ok (add' x y s).
 Proof.
+  intros.
+  rewrite (add'_addBool _ _ _ H).
+  apply proj2_sig.
+Qed.
+
+Check addBool.
+
+Theorem In_add: forall x l h s, InBool x (addBool l h s) <-> l <= x < h \/ InBool x s.
+Proof.
+  intros.
+  split.
+  intro H.
+  rewrite <- inBool'_inBool in *.
+  rewrite <- add'_addBool2 in H.
+
+  { assert (forall s' , R.ok s' -> R.ok (add' l h s')) by apply ok_add'.
+    destruct s as [ s' hs' ].
+    simpl in *.
+    revert H0 H hs'.
+    trakt bool.
+    intros.
+    assert (H100 := R.In_addBool).
+    scope.
+    Focus 2.
+
+assert (H2' : (forall H5 H7 : Z, (H5 <? H7)%Z = false -> forall s : R.t, add' H5 H7 s = s)
+) by admit; clear H2 H3.
+assert (H4' : (forall H5 H7 : Z,
+          (H5 <? H7)%Z = true -> forall s : R.t, add' H5 H7 s = R.addBool H5 H7 s)
+
+) by admit; clear H4 H5.
+assert (H6' : (forall H19 H21 H22 : Z,
+          (H21 <? H22)%Z = false ->
+          forall (hi : Z) (tl : R.t),
+          R.addBool H19 H21 (R.Cons H22 hi tl) =
+          (if (hi <? H19)%Z
+           then R.Cons H22 hi (R.addBool H19 H21 tl)
+           else R.addBool (R.min H22 H19) (R.max hi H21) tl))) by admit; clear H6 H8.
+assert (H17' : (forall H19 H21 H22 : Z,
+           (H21 <? H22)%Z = true ->
+           forall (hi : Z) (tl : R.t),
+           R.addBool H19 H21 (R.Cons H22 hi tl) =
+           (if (hi <? H19)%Z
+            then R.Cons H22 hi (R.addBool H19 H21 tl)
+            else R.Cons H19 H21 (R.Cons H22 hi tl)))
+) by admit; clear H17 H9.
+assert (H6a : forall H19 H21 H22 : Z,
+        (H21 <? H22)%Z = false ->
+        forall (hi : Z) (tl : R.t), (hi <? H19)%Z = true ->
+        R.addBool H19 H21 (R.Cons H22 hi tl) =
+        (R.Cons H22 hi (R.addBool H19 H21 tl))
+) by admit.
+assert (H6b : forall H19 H21 H22 : Z,
+        (H21 <? H22)%Z = false ->
+        forall (hi : Z) (tl : R.t), (hi <? H19)%Z = false ->
+        R.addBool H19 H21 (R.Cons H22 hi tl) =
+        R.addBool (R.min H22 H19) (R.max hi H21) tl) by admit; clear H6'.
+assert (H13a : forall H19 H21 H22 : Z,
+         (H21 <? H22)%Z = true ->
+         forall (hi : Z) (tl : R.t),
+         (hi <? H19)%Z = true ->
+         R.addBool H19 H21 (R.Cons H22 hi tl) =
+         R.Cons H22 hi (R.addBool H19 H21 tl)) by admit.
+assert (H13b : forall H19 H21 H22 : Z,
+         (H21 <? H22)%Z = true ->
+         forall (hi : Z) (tl : R.t),
+         (hi <? H19)%Z = false ->
+         R.addBool H19 H21 (R.Cons H22 hi tl) =
+         R.Cons H19 H21 (R.Cons H22 hi tl)) by admit; clear H17'.
+
+
+    verit.
+    }
+
+    by rewrite  apply ok_add'. scope. Focus 4. }
+
+  Focus 4.
+
+
   unfold add.
   unfold In. intros.
   destruct (zlt l h).
@@ -569,7 +813,7 @@ Qed.
 Program Definition remove (l h: Z) (s: t) : t :=
   if zlt l h then R.remove l h s else s.
 Next Obligation.
-  apply R.remove_ok. auto. apply proj2_sig.
+  intros. apply R.remove_ok. auto. apply proj2_sig.
 Qed.
 
 Theorem In_remove: forall x l h s, In x (remove l h s) <-> ~(l <= x < h) /\ In x s.
